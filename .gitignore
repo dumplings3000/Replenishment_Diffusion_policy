@@ -1,0 +1,11 @@
+# Python 編譯暫存檔 (必須忽略！)
+__pycache__/
+*.pyc
+*.pt
+*.h5
+
+# 訓練產生的大型資料夾
+checkpoints/
+wandb/
+RDP_first_train/
+models/rdp/ckpt/

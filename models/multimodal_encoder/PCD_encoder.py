@@ -1,65 +1,87 @@
 import torch
 import torch.nn as nn
-from pointmlp_model import PointMLP
+from easydict import EasyDict
+import models.ULIP.models.ULIP_models as models
+from models.ULIP.utils.utils import get_model
 
-class PointMLPTower(nn.Module):
-    def __init__(self, args, delay_load=False):
+def PonderV2Processor(pcd):
+    return torch.from_numpy(pcd).float() if not isinstance(pcd, torch.Tensor) else pcd
+
+class PointTower(nn.Module):
+    def __init__(self, model_path):
         super().__init__()
 
         self.is_loaded = False
-        self.select_feature = getattr(args, 'mm_point_select_feature', 'global')  # 可選 'global' 或 'per_point'
+        
+        self._model_path = model_path
 
-        if not delay_load:
-            self.load_model()
+        self.pcd_processor = PonderV2Processor
+
+        self.load_model()
 
     def load_model(self):
         if self.is_loaded:
-            print('PointMLP is already loaded, `load_model` called again, skipping.')
+            print('ULIP model is already loaded, `load_model` called again, skipping.')
             return
 
-        self.point_encoder = PointMLP()  # 載入 PointMLP 模型
-        self.point_encoder.eval()
+        print(f"Loading ULIP2 model from checkpoint: {self._model_path}")
+        args = EasyDict({
+            'evaluate_3d': True,
+        })
 
+        # 2. 建立模型
+        self.pcd_encoder = getattr(models, "ULIP_PointBERT")(args=args)
+        
+        # 3. 載入預訓練權重
+        ckpt = torch.load(self._model_path, map_location='cpu')
+        
+        # 從 checkpoint 中提取模型狀態字典 (通常在 'model' 或 'state_dict' key 中)
+        state_dict = {k.replace('module.', ''): v for k, v in ckpt['state_dict'].items()}
+        
+        self.pcd_encoder.load_state_dict(state_dict, strict=True)
+        self.pcd_encoder.eval() # 設置為評估模式
+        print(f"ULIP2 model loaded successfully.")
         self.is_loaded = True
 
-    def feature_select(self, point_forward_outs):
-        if self.select_feature == 'global':
-            # 假設輸出為 (B, 1024)，可作為 global token
-            point_features = point_forward_outs
-        elif self.select_feature == 'per_point':
-            # 假設可取出 per-point 特徵 (B, N, C)
-            point_features = point_forward_outs.per_point_features
+    def feature_select(self, image_forward_outs, select_feature='patch'):
+        if select_feature == 'patch':
+            image_features = image_forward_outs[:, 1:, :]
+        elif select_feature == 'cls_patch':
+            image_features = image_forward_outs[:, 0, :] 
         else:
-            raise ValueError(f'Unexpected select feature: {self.select_feature}')
-        return point_features
+            raise ValueError(f'Unexpected select feature: {select_feature}')
+        return image_features
+
 
     @torch.no_grad()
     def forward(self, point_clouds):
-        if type(point_clouds) is list:
-            point_features = []
-            for pc in point_clouds:
-                pc = pc.to(device=self.device, dtype=self.dtype).unsqueeze(0)  # (1, N, 3)
-                point_forward_out = self.point_encoder(pc)
-                point_feature = self.feature_select(point_forward_out).to(pc.dtype)
-                point_features.append(point_feature)
-        else:
-            point_forward_outs = self.point_encoder(point_clouds.to(device=self.device, dtype=self.dtype))  # (B, N, 3)
-            point_features = self.feature_select(point_forward_outs).to(point_clouds.dtype)
-
-        return point_features
-
-    @property
-    def dummy_feature(self):
-        return torch.zeros(1, self.hidden_size, device=self.device, dtype=self.dtype)
+        pcd_forward_outs, origin_pcd_features = get_model(self.pcd_encoder).encode_pc(point_clouds.to(self.device, dtype=torch.float32))
+        pcd_features = pcd_forward_outs / pcd_forward_outs.norm(dim=-1, keepdim=True)
+        cls = self.feature_select(origin_pcd_features, select_feature='cls_patch')
+        patch = self.feature_select(origin_pcd_features, select_feature='patch')
+        return pcd_features.to(point_clouds.dtype), cls.to(point_clouds.dtype), patch.to(point_clouds.dtype)
 
     @property
     def dtype(self):
-        return self.point_encoder.dtype if hasattr(self.point_encoder, 'dtype') else torch.float32
+        return next(self.pcd_encoder.parameters()).dtype
 
     @property
     def device(self):
-        return next(self.point_encoder.parameters()).device
+        return next(self.pcd_encoder.parameters()).device
+    
+    @property
+    def config(self):
+        return self.pcd_encoder.config
 
     @property
+    def global_hidden_size(self):
+        return self.pcd_encoder.pc_projection.shape[1]
+    
+    @property
     def hidden_size(self):
-        return 1024  # 根據 PointMLP 輸出特徵維度調整
+        return self.pcd_encoder.point_encoder.trans_dim
+    
+    @property
+    def num_patches(self):
+        return 512
+        # return self.config.num_patches if hasattr(self.config, 'num_patches') else 512

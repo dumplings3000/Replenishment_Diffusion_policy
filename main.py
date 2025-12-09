@@ -1,25 +1,17 @@
-import argparse
 import os
+import argparse
 from train.train import train
 
 from accelerate.logging import get_logger
+
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Main script to Train Diffusion Mamba Policy")
     # Required File Paths
     parser.add_argument("--config_path", 
                         type=str, 
-                        default="configs/config.yaml", 
+                        default="configs/base.yaml", 
                         help="Path to config file",
-                        )
-    parser.add_argument("--load_from_hdf5",
-                        action="store_true",
-                        default=False,
-                        help=(
-                            "Whether to load the dataset directly from HDF5 files. "
-                            "If False, the dataset will be loaded using producer-consumer pattern, "
-                            "where the producer reads TFRecords and saves them to buffer, and the consumer reads from buffer."
-                            )
                         )
     parser.add_argument("--pretrain_vision_encoder",
                         type=str,
@@ -32,6 +24,12 @@ def parse_args(input_args=None):
                         default=None,
                         help="Path to pre-trained point cloud encoder",
                         )
+    parser.add_argument("--model_path",
+                        type=str,
+                        default=None,
+                        help="Path to pre-trained model",
+                        )
+    
     parser.add_argument("--output_dir",
                         type=str,
                         default=None,
@@ -79,6 +77,24 @@ def parse_args(input_args=None):
             " in the training batch."
         ),
     )
+    parser.add_argument(
+        "--cond_mask_prob",
+        type=float,
+        default=0.1,
+        help=(
+            "The probability to randomly mask the conditions (except states) during training. "
+            "If set to 0, the conditions are not masked."
+        ),
+    )
+    parser.add_argument(
+        "--cam_ext_mask_prob",
+        type=float,
+        default=-1.0,
+        help=(
+            "The probability to randomly mask the external camera image during training. "
+            "If set to < 0, the external camera image is masked with the probability of `cond_mask_prob`."
+        ),
+    )
 
     # checkpoints
     parser.add_argument("--checkpointing_period",
@@ -98,7 +114,7 @@ def parse_args(input_args=None):
             ' `--checkpointing_period`, or `"latest"` to automatically select the last available checkpoint.'
             )
     )
-    parser.add_argument("--checkpoint_total_limit",
+    parser.add_argument("--checkpoints_total_limit",
             type=int,
             default=None,
             help=(
@@ -109,7 +125,6 @@ def parse_args(input_args=None):
     )
 
     # training options
-    parser.add_argument('--dataset_type', type=str, default="pretrain", required=False, help="Whether to load the pretrain dataset or finetune dataset.")
     parser.add_argument("--state_noise_snr", type=float, default=None,
         help=(
             "The signal-to-noise ratio (SNR, unit: dB) for adding noise to the states. "

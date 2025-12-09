@@ -14,12 +14,12 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 
-from models.rdt.blocks import (FinalLayer, RDTBlock, TimestepEmbedder,
+from models.rdp.blocks import (FinalLayer, RDTBlock, TimestepEmbedder, TemporalFuser,
                                get_1d_sincos_pos_embed_from_grid,
                                get_multimodal_cond_pos_embed)
 
 
-class RDT(nn.Module):
+class RDP(nn.Module):
     """
     Class for Robotics Diffusion Transformers.
     """
@@ -30,34 +30,49 @@ class RDT(nn.Module):
         hidden_size=1152,
         depth=28,
         num_heads=16,
-        max_lang_cond_len=1024,
-        img_cond_len=4096,
-        lang_pos_embed_config=None,
-        img_pos_embed_config=None,
+        vision_cond_len=774,
+        # history_cond_len=1542, # <<< MODIFIED: 這個參數不再需要
+        fuser_queries=774,       # <<< NEW: TemporalFuser 的輸出 token 數
+        fuser_depth=4,           # <<< NEW: TemporalFuser 的層數
+        # global_pos_embed_config=None, # <<< MODIFIED: 這個也不再需要
+        vision_pos_embed_config=None,
         dtype=torch.bfloat16
     ):
         super().__init__()
         self.horizon = horizon
         self.hidden_size = hidden_size
-        self.max_lang_cond_len = max_lang_cond_len
-        self.img_cond_len = img_cond_len
+        # self.history_cond = history_cond_len # <<< MODIFIED: 不再使用
+        self.vision_cond = vision_cond_len
         self.dtype = dtype
-        self.lang_pos_embed_config = lang_pos_embed_config
-        self.img_pos_embed_config = img_pos_embed_config
+        # self.global_pos_embed_config = global_pos_embed_config
+        self.vision_pos_embed_config = vision_pos_embed_config
 
         self.t_embedder = TimestepEmbedder(hidden_size, dtype=dtype)
         self.freq_embedder = TimestepEmbedder(hidden_size, dtype=dtype)
+
+        self.fuser_queries = fuser_queries   #20251027
         
         # We will use trainable sin-cos embeddings
         # [timestep; state; action]
         self.x_pos_embed = nn.Parameter(
             torch.zeros(1, horizon+3, hidden_size))
-        # Language conditions
-        self.lang_cond_pos_embed = nn.Parameter(
-            torch.zeros(1, max_lang_cond_len, hidden_size))
+        # history conditions
+        # self.history_cond_pos_embed = nn.Parameter(
+        #     torch.zeros(1, history_cond_len, hidden_size))
         # Image conditions
         self.img_cond_pos_embed = nn.Parameter(
-            torch.zeros(1, img_cond_len, hidden_size))
+            torch.zeros(1, vision_cond_len, hidden_size))
+        
+        # 20251027
+        self.temporal_fuser = TemporalFuser(
+            dim=hidden_size,
+            n_queries=fuser_queries,
+            num_heads=num_heads,
+            depth=fuser_depth,
+            qkv_bias=True,  # 推薦
+            drop=0.0,
+            attn_drop=0.0
+        )
 
         self.blocks = nn.ModuleList([
             RDTBlock(hidden_size, num_heads) for _ in range(depth)
@@ -86,25 +101,25 @@ class RDT(nn.Module):
         )
         self.x_pos_embed.data.copy_(torch.from_numpy(x_pos_embed).float().unsqueeze(0))
 
-        if self.lang_pos_embed_config is None:
-            lang_cond_pos_embed = get_1d_sincos_pos_embed_from_grid(
-                self.hidden_size, torch.arange(self.max_lang_cond_len))
-        else:
-            lang_cond_pos_embed = get_multimodal_cond_pos_embed(
-                embed_dim=self.hidden_size,
-                mm_cond_lens=OrderedDict(self.lang_pos_embed_config),
-                embed_modality=False
-            )
-        self.lang_cond_pos_embed.data.copy_(
-            torch.from_numpy(lang_cond_pos_embed).float().unsqueeze(0))
+        # if self.global_pos_embed_config is None:
+        #     history_cond_pos_embed = get_1d_sincos_pos_embed_from_grid(
+        #         self.hidden_size, torch.arange(self.history_cond))
+        # else:
+        #     history_cond_pos_embed = get_multimodal_cond_pos_embed(
+        #         embed_dim=self.hidden_size,
+        #         mm_cond_lens=OrderedDict(self.global_pos_embed_config),
+        #         embed_modality=False
+        #     )
+        # self.history_cond_pos_embed.data.copy_(
+        #     torch.from_numpy(history_cond_pos_embed).float().unsqueeze(0))
         
-        if self.img_pos_embed_config is None:
+        if self.vision_pos_embed_config is None:
             img_cond_pos_embed = get_1d_sincos_pos_embed_from_grid(
-                self.hidden_size, torch.arange(self.img_cond_len))
+                self.hidden_size, torch.arange(self.vision_cond))
         else:
             img_cond_pos_embed = get_multimodal_cond_pos_embed(
                 embed_dim=self.hidden_size,
-                mm_cond_lens=OrderedDict(self.img_pos_embed_config),
+                mm_cond_lens=OrderedDict(self.vision_pos_embed_config),
                 embed_modality=False
             )
         self.img_cond_pos_embed.data.copy_(
@@ -123,7 +138,7 @@ class RDT(nn.Module):
         # Move all the params to given data type:
         self.to(self.dtype)
 
-    def forward(self, x, freq, t, lang_c, img_c, lang_mask=None, img_mask=None):
+    def forward(self, x, freq, t, history_c, img_c, history_mask=None, img_mask=None):
         """
         Forward pass of RDT.
         
@@ -131,11 +146,11 @@ class RDT(nn.Module):
             dimension D is assumed to be the same as the hidden size.
         freq: (B,), a scalar indicating control frequency.
         t: (B,) or (1,), diffusion timesteps.
-        lang_c: (B, L_lang, D) or None, language condition tokens (variable length),
+        history_c: (B, L_history, D) or None, history condition tokens (variable length),
             dimension D is assumed to be the same as the hidden size.
         img_c: (B, L_img, D) or None, image condition tokens (fixed length),
             dimension D is assumed to be the same as the hidden size.
-        lang_mask: (B, L_lang) or None, language condition mask (True for valid).
+        history_mask: (B, L_history) or None, historyuage condition mask (True for valid).
         img_mask: (B, L_img) or None, image condition mask (True for valid).
         """
         t = self.t_embedder(t).unsqueeze(1)             # (B, 1, D) or (1, 1, D)
@@ -147,17 +162,22 @@ class RDT(nn.Module):
         
         # Add multimodal position embeddings
         x = x + self.x_pos_embed
-        # Note the lang is of variable length
-        lang_c = lang_c + self.lang_cond_pos_embed[:, :lang_c.shape[1]]
+        # Note the history is of variable length
+        # history_c = history_c + self.history_cond_pos_embed[:, :history_c.shape[1]]
         img_c = img_c + self.img_cond_pos_embed
-
+        history_c= self.temporal_fuser(history_c)
+    
         # Forward pass
-        conds = [lang_c, img_c]
-        masks = [lang_mask, img_mask]
+        # conds = [history_c, img_c1, history_c, img_c2]
+        conds = [history_c, img_c]
+
+        masks = [history_mask, img_mask]
         for i, block in enumerate(self.blocks):
+            # c, mask = conds[i%4], masks[i%2]
             c, mask = conds[i%2], masks[i%2]
+            
             x = block(x, c, mask)                       # (B, T+1, D)
-        # Inject the language condition at the final layer
+        # Inject the historyuage condition at the final layer
         x = self.final_layer(x)                         # (B, T+1, out_channels)
 
         # Only preserve the action tokens

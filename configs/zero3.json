@@ -1,0 +1,28 @@
+{
+    "bf16": {
+        "enabled": true
+    },
+    "train_micro_batch_size_per_gpu": "auto",
+    "gradient_accumulation_steps": "auto",
+    "train_batch_size": "auto",
+    "zero_optimization": {
+        "stage": 3,
+        "offload_optimizer": {
+            "device": "cpu",
+            "pin_memory": true
+        },
+        "offload_param": {
+            "device": "cpu",
+            "pin_memory": true
+        },
+        "overlap_comm": true,
+        "contiguous_gradients": true,
+        "reduce_bucket_size": 2e8,
+        "stage3_prefetch_bucket_size": 2e8,
+        "stage3_param_persistence_threshold": 1e6
+    },
+    "steps_per_print": 50,
+    "wall_clock_breakdown": false,
+    "load_optimizer_state": false,
+    "load_rng_state": false
+}

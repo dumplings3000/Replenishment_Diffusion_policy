@@ -1,54 +1,49 @@
-export NCCL_IB_HCA=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_7:1,mlx5_8:1,mlx5_9:1
-export NCCL_IB_DISABLE=0
-export NCCL_SOCKET_IFNAME=bond0
-export NCCL_DEBUG=INFO
-export NCCL_NVLS_ENABLE=0
-
-export TEXT_ENCODER_NAME="google/t5-v1_1-xxl"
-export VISION_ENCODER_NAME="google/siglip-so400m-patch14-384"
-export OUTPUT_DIR="./checkpoints/rdt-finetune-1b"
+export VISION_ENCODER_NAME="facebook/dinov2-large"
+export PCD_ENCODER_NAME="models/ULIP/ckpt/ULIP-2-PointBERT-8k-xyz-pc-slip_vit_b-objaverse-pretrained.pt"
+export OUTPUT_DIR="/media/lab901-server/DEE1-00E6/checkpoints/RDP_SECOND_train"
 export CFLAGS="-I/usr/include"
 export LDFLAGS="-L/usr/lib/x86_64-linux-gnu"
-export CUTLASS_PATH="/path/to/cutlass"
+export CUTLASS_PATH="/home/user/cutlass"
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:256"
+export NCCL_DEBUG=WARN
+export NCCL_SOCKET_IFNAME=lo
+export CUDA_LAUNCH_BLOCKING=1
 
-export WANDB_PROJECT="robotics_diffusion_transformer"
+export WANDB_PROJECT="REPLENISHMENT_DIFFUSION_POLICY second training new"
 
 if [ ! -d "$OUTPUT_DIR" ]; then
-    mkdir "$OUTPUT_DIR"
+    mkdir -p "$OUTPUT_DIR"
     echo "Folder '$OUTPUT_DIR' created"
 else
     echo "Folder '$OUTPUT_DIR' already exists"
 fi
 
-# For run in a single node/machine
-# accelerate launch main.py \
-#     --deepspeed="./configs/zero2.json" \
-#     ...
-
 deepspeed --hostfile=hostfile.txt main.py \
-    --deepspeed="./configs/zero2.json" \
-    --pretrained_model_name_or_path="robotics-diffusion-transformer/rdt-1b" \
-    --pretrained_text_encoder_name_or_path=$TEXT_ENCODER_NAME \
-    --pretrained_vision_encoder_name_or_path=$VISION_ENCODER_NAME \
+    --deepspeed="./configs/zero1.json" \
+    --model_path="models/rdp/ckpt/pytorch_model.bin"\
+    --pretrain_vision_encoder=$VISION_ENCODER_NAME \
+    --pretrain_pointcloud_encoder=$PCD_ENCODER_NAME \
     --output_dir=$OUTPUT_DIR \
-    --train_batch_size=32 \
-    --sample_batch_size=64 \
+    --train_batch_size=2 \
+    --sample_batch_size=2 \
     --max_train_steps=200000 \
     --checkpointing_period=1000 \
     --sample_period=500 \
     --checkpoints_total_limit=40 \
-    --lr_scheduler="constant" \
-    --learning_rate=1e-4 \
+    --lr_scheduler="cosine" \
+    --lr_warmup_steps=2000 \
+    --lr_num_cycles=1 \
+    --lr_power=1.0 \
+    --learning_rate=1e-5 \
+    --gradient_accumulation_steps=16 \
+    --dataloader_num_workers=12 \
+    --state_noise_snr=20 \
+    --max_grad_norm=0.5 \
+    --report_to=wandb \
+    --adam_epsilon=1e-4 \
+    --allow_tf32 \
     --mixed_precision="bf16" \
-    --dataloader_num_workers=8 \
-    --image_aug \
-    --dataset_type="finetune" \
-    --state_noise_snr=40 \
-    --load_from_hdf5 \
-    --report_to=wandb
+    --adam_weight_decay=0.05 
+    # --resume_from_checkpoint="latest"
 
     # Use this to resume training from some previous checkpoint
-    # --resume_from_checkpoint="checkpoint-36000" \
-    # Use this to load from saved lanuage instruction embeddings,
-    # instead of calculating it during training
-    # --precomp_lang_embed \

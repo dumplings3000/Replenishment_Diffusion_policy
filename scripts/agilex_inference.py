@@ -30,36 +30,42 @@ CAMERA_NAMES = ['cam_high', 'cam_right_wrist', 'cam_left_wrist']
 
 observation_window = None
 
-lang_embeddings = None
-
 # debug
 preload_images = None
-
-
-# Initialize the model
-def make_policy(args):
-    with open(args.config_path, "r") as fp:
-        config = yaml.safe_load(fp)
-    args.config = config
-    
-    # pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
-    pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
-    model = create_model(
-        args=args.config, 
-        dtype=torch.bfloat16,
-        pretrained=args.pretrained_model_name_or_path,
-        # pretrained_text_encoder_name_or_path=pretrained_text_encoder_name_or_path,
-        pretrained_vision_encoder_name_or_path=pretrained_vision_encoder_name_or_path,
-        control_frequency=args.ctrl_freq,
-    )
-
-    return model
-
 
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+def get_config(args):
+    config = {
+        'episode_len': args.max_publish_step,
+        'state_dim': 14,
+        'chunk_size': args.chunk_size,
+        'camera_names': CAMERA_NAMES,
+    }
+    return config
+
+def make_policy(args):
+    """
+    Model initialize
+    """
+    with open(args.config_path, "r") as fp:
+        config = yaml.safe_load(fp)
+    args.config = config
+    
+    # pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
+    pretrained_img_encoder_name_or_path = "facebook/dinov2-large"
+    pretrained_pcd_encoder_name_or_path = "models/ULIP/ckpt/ULIP-2-PointBERT-8k-xyz-pc-slip_vit_b-objaverse-pretrained.pt"
+    model = create_model(
+        args=args.config, 
+        dtype=torch.bfloat16,
+        pretrained=args.pretrained_model_name_or_path,
+        pretrained_img_encoder_name_or_path=pretrained_img_encoder_name_or_path,
+        pretrained_pcd_encoder_name_or_path=pretrained_pcd_encoder_name_or_path,
+        control_frequency=args.ctrl_freq,
+    )
+    return model
 
 # Interpolate the actions to make the robot move smoothly
 def interpolate_action(args, prev_action, cur_action):
@@ -71,17 +77,6 @@ def interpolate_action(args, prev_action, cur_action):
         return cur_action[np.newaxis, :]
     new_actions = np.linspace(prev_action, cur_action, step + 1)
     return new_actions[1:]
-
-
-def get_config(args):
-    config = {
-        'episode_len': args.max_publish_step,
-        'state_dim': 14,
-        'chunk_size': args.chunk_size,
-        'camera_names': CAMERA_NAMES,
-    }
-    return config
-
 
 # Get the observation from the ROS topic
 def get_ros_observation(args,ros_operator):
@@ -555,20 +550,20 @@ class RosOperator:
         self.robot_base_deque.append(msg)
 
     def init_ros(self):
+        
         rospy.init_node('joint_state_publisher', anonymous=True)
+        # img subscriber
         rospy.Subscriber(self.args.img_left_topic, Image, self.img_left_callback, queue_size=1000, tcp_nodelay=True)
         rospy.Subscriber(self.args.img_right_topic, Image, self.img_right_callback, queue_size=1000, tcp_nodelay=True)
         rospy.Subscriber(self.args.img_front_topic, Image, self.img_front_callback, queue_size=1000, tcp_nodelay=True)
-        if self.args.use_depth_image:
-            rospy.Subscriber(self.args.img_left_depth_topic, Image, self.img_left_depth_callback, queue_size=1000, tcp_nodelay=True)
-            rospy.Subscriber(self.args.img_right_depth_topic, Image, self.img_right_depth_callback, queue_size=1000, tcp_nodelay=True)
-            rospy.Subscriber(self.args.img_front_depth_topic, Image, self.img_front_depth_callback, queue_size=1000, tcp_nodelay=True)
+        # pcd subscriber
+        
+        # robot subscriber
         rospy.Subscriber(self.args.puppet_arm_left_topic, JointState, self.puppet_arm_left_callback, queue_size=1000, tcp_nodelay=True)
-        rospy.Subscriber(self.args.puppet_arm_right_topic, JointState, self.puppet_arm_right_callback, queue_size=1000, tcp_nodelay=True)
-        rospy.Subscriber(self.args.robot_base_topic, Odometry, self.robot_base_callback, queue_size=1000, tcp_nodelay=True)
+
+        # Robot action publisher
         self.puppet_arm_left_publisher = rospy.Publisher(self.args.puppet_arm_left_cmd_topic, JointState, queue_size=10)
-        self.puppet_arm_right_publisher = rospy.Publisher(self.args.puppet_arm_right_cmd_topic, JointState, queue_size=10)
-        self.robot_base_publisher = rospy.Publisher(self.args.robot_base_cmd_topic, Twist, queue_size=10)
+
 
 
 def get_arguments():
